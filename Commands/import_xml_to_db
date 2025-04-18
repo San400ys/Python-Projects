@@ -1,0 +1,181 @@
+import os
+import xml.etree.ElementTree as ET
+from django.core.management.base import BaseCommand
+from api.models import Contractor, ContractorMan, Inspector, Object, Registry, SuperVisor, Work
+from django.db import IntegrityError, transaction
+from datetime import datetime
+
+class Command(BaseCommand):
+    help = 'Импортирует данные из XML файлов в базу данных'
+
+    def handle(self, *args, **kwargs):
+        xml_folder = os.path.join(os.getcwd(), 'api', 'management', 'commands', 'xml_data')
+        files = os.listdir(xml_folder)
+        files = [f for f in files if f.endswith('.xml')]
+
+        self.stdout.write(f"Содержимое каталога {xml_folder}: {files}")
+
+        for file in files:
+            file_path = os.path.join(xml_folder, file)
+            self.stdout.write(f"Импорт данных из файла: {file}")
+            try:
+                self.import_xml(file_path)
+                self.stdout.write(self.style.SUCCESS(f"Данные из {file} успешно импортированы."))
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"Ошибка при импорте из {file}: {e}"))
+
+    def import_xml(self, file_path):
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+
+        if root.tag == "Contractors":
+            self.import_contractors(root)
+        elif root.tag == "ContractorMans":
+            self.import_contractor_mans(root)
+        elif root.tag == "Inspectors":
+            self.import_inspectors(root)
+        elif root.tag == "Objects":
+            self.import_objects(root)
+        elif root.tag == "Registries":
+            self.import_registries(root)
+        elif root.tag == "SuperVisors":
+            self.import_supervisors(root)
+        elif root.tag == "Works":
+            self.import_works(root)
+
+    def import_contractors(self, root):
+        contractors = []
+        for contractor in root.findall('Contractor'):
+            contractors.append(Contractor(
+                NominativeName=contractor.get('NominativeName'),
+                GenitiveName=contractor.get('GenitiveName'),
+                IsBranch=bool(int(contractor.get('IsBranch', '0'))),
+                IsCustomer=bool(int(contractor.get('IsCustomer', '0'))),
+                IsBuildWatch=bool(int(contractor.get('IsBuildWatch', '0'))),
+                Series=contractor.get('Series')
+            ))
+        self.bulk_create(Contractor, contractors)
+
+    def import_contractor_mans(self, root):
+        contractor_mans = []
+        for contractor_man in root.findall('ContractorMan'):
+            contractor_mans.append(ContractorMan(
+                ContractorID=int(contractor_man.get('ContractorID')),
+                ShortName=contractor_man.get('ShortName'),
+                NominativeName=contractor_man.get('NominativeName'),
+                IsBoss=bool(int(contractor_man.get('IsBoss', '0')))
+            ))
+        self.bulk_create(ContractorMan, contractor_mans)
+
+    def import_inspectors(self, root):
+        inspectors = []
+        for inspector in root.findall('Inspector'):
+            nominative_name = inspector.get('NominativeName') if inspector.get('NominativeName') else 'Не указано'
+            inspectors.append(Inspector(
+                NominativeName=nominative_name
+            ))
+        self.bulk_create(Inspector, inspectors)
+
+    def import_objects(self, root):
+        objects = []
+        for obj in root.findall('Object'):
+            objects.append(Object(
+                Name=obj.get('Name'),
+                ParentID=obj.get('ParentID'),
+                NodeTypeID=obj.get('NodeTypeID'),
+                RegionCode=obj.get('RegionCode'),
+                Code=obj.get('Code'),
+                iValue=obj.get('iValue'),
+                IsLock=bool(int(obj.get('IsLock', '0')))
+            ))
+        self.bulk_create(Object, objects)
+
+    def import_registries(self, root):
+        registries = []
+        for registry in root.findall('Registry'):
+            try:
+                iValue1 = int(registry.get('iValue1')) if registry.get('iValue1') else None
+            except ValueError:
+                iValue1 = None
+
+            try:
+                iValue = int(registry.get('iValue')) if registry.get('iValue') else None
+            except ValueError:
+                iValue = None
+
+            try:
+                dValue = float(registry.get('dValue')) if registry.get('dValue') else None
+            except ValueError:
+                dValue = None
+
+            try:
+                dtValue = self.convert_to_datetime(registry.get('dtValue'))
+            except ValueError:
+                dtValue = None
+
+            try:
+                iValue2 = int(registry.get('iValue2')) if registry.get('iValue2') else None
+            except ValueError:
+                iValue2 = None
+
+            registries.append(Registry(
+                ParentID=registry.get('ParentID'),
+                Context=registry.get('Context'),
+                Name=registry.get('Name'),
+                iValue=iValue,
+                dValue=dValue,
+                sValue=registry.get('sValue'),
+                dtValue=dtValue,
+                rValue=registry.get('rValue'),
+                Info=registry.get('Info'),
+                iValue1=iValue1,
+                iValue2=iValue2,
+                sValue1=registry.get('sValue1')
+            ))
+        self.bulk_create(Registry, registries)
+
+    def convert_to_datetime(self, date_str):
+        if not date_str:
+            return None
+        try:
+            return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            try:
+                return datetime.strptime(date_str, '%Y-%m-%d')
+            except ValueError:
+                raise ValueError(f"Невалидный формат даты: {date_str}")
+
+    def import_supervisors(self, root):
+        supervisors = []
+        for supervisor in root.findall('SuperVisor'):
+            login = supervisor.get('Login')
+            supervisors.append(SuperVisor(
+                Login=login,
+                GuID=supervisor.get('GuID'),
+                FullName=supervisor.get('FullName'),
+                ShortName=supervisor.get('ShortName'),
+                IsMain=bool(int(supervisor.get('IsMain', '0')))
+            ))
+        self.bulk_create(SuperVisor, supervisors)
+
+    def import_works(self, root):
+        works = []
+        for work in root.findall('Work'):
+            works.append(Work(
+                Context=work.get('Context'),
+                Name=work.get('Name'),
+                Ord=work.get('Ord'),
+                Tmp1=work.get('Tmp1'),
+                Tmp2=work.get('Tmp2')
+            ))
+        self.bulk_create(Work, works)
+
+    def bulk_create(self, model, data):
+        BATCH_SIZE = 500
+        for i in range(0, len(data), BATCH_SIZE):
+            for record in data[i:i+BATCH_SIZE]:
+                try:
+                    record.save(force_insert=True)  
+                except IntegrityError as e:
+                    continue  
+            self.stdout.write(self.style.SUCCESS(f"Успешно добавлено {len(data[i:i+BATCH_SIZE])} записей в {model.__name__}"))
