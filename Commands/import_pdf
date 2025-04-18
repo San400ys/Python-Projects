@@ -1,0 +1,97 @@
+import re  
+import pdfplumber
+from django.core.management.base import BaseCommand
+from api.models import Violation
+
+
+class Command(BaseCommand):
+    help = "Импорт нарушений из PDF в базу данных"
+
+    def add_arguments(self, parser):
+        parser.add_argument('pdf_path', type=str, help='Путь к PDF файлу')
+
+    def handle(self, *args, **options):
+        pdf_path = options['pdf_path']
+        self.stdout.write(f"Начало обработки файла: {pdf_path}...")
+
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                total_added = 0
+                current_violation = ""
+                current_document = ""
+                collecting_violation = False  
+                collecting_document = False  
+
+                number_pattern = re.compile(r"^\d+(\.\d+)?\s*")  
+                lna_pattern = re.compile(r"\b\d{3,4}-\d{3,4}-\d{4}\s*ЛНА\b", re.IGNORECASE) 
+                bez_foto_pattern = re.compile(r"\bБез фото\b", re.IGNORECASE)  
+                lna2_pattern = re.compile(r"-439-2024 ЛНА", re.IGNORECASE) 
+
+                for page_num, page in enumerate(pdf.pages, start=1):
+                    self.stdout.write(f"Обработка страницы {page_num}...")
+                    page_text = page.extract_text()
+
+                    if not page_text:
+                        self.stdout.write(f"Страница {page_num} пуста. Пропускаем...")
+                        continue
+
+                    lines = page_text.split("\n")
+                    for line in lines:
+                        line = line.strip()
+
+                        line = number_pattern.sub("", line)  
+                        line = lna_pattern.sub("", line)  
+                        line = bez_foto_pattern.sub("", line)  
+                        line = lna2_pattern.sub("", line)  
+
+                        self.stdout.write(f"Обработка строки: {line}")
+
+                        if line.startswith("Выявленное нарушение:") or line.startswith("Выявленные нарушения:"):
+                            if current_violation and current_document:
+                                current_violation = lna_pattern.sub("", current_violation).strip()
+                                current_document = lna_pattern.sub("", current_document).strip()
+                                current_violation = lna2_pattern.sub("", current_violation).strip()
+                                current_document = lna2_pattern.sub("", current_document).strip()
+
+
+                                Violation.objects.create(
+                                    description=current_violation,
+                                    document=current_document
+                                )
+                                self.stdout.write(f"Сохранено нарушение: {current_violation}")
+                                total_added += 1
+
+                            collecting_violation = True
+                            collecting_document = False
+                            current_violation = line.split(":", 1)[-1].strip()  
+                            current_document = ""
+
+                        elif line.startswith("Нормативный документ:"):
+                            collecting_document = True
+                            collecting_violation = False
+                            current_document = line.split(":", 1)[-1].strip()
+
+                        elif collecting_violation:
+                            current_violation += " " + line
+
+                        elif collecting_document:
+                            current_document += " " + line
+
+                if current_violation and current_document:
+                    current_violation = lna_pattern.sub("", current_violation).strip()
+                    current_document = lna_pattern.sub("", current_document).strip()
+                    current_violation = lna2_pattern.sub("", current_violation).strip()
+                    current_document = lna2_pattern.sub("", current_document).strip()
+
+
+                    Violation.objects.create(
+                        description=current_violation,
+                        document=current_document
+                    )
+                    self.stdout.write(f"Сохранено нарушение: {current_violation}")
+                    total_added += 1
+
+            self.stdout.write(f"\nИмпорт завершен. Всего добавлено записей: {total_added}")
+
+        except Exception as e:
+            self.stderr.write(f"Ошибка при обработке файла: {e}")
